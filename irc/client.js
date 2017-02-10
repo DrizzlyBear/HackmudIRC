@@ -2,6 +2,7 @@
 
 const Promise = require('bluebird');
 const APIClient = require('../hmapi/index');
+const colors = require('../util/colors');
 
 function emitLines (stream) {
 	let backlog = ''
@@ -70,6 +71,15 @@ class IRCClient {
 		socket.on('error', () => socket.end());
 	}
 
+	_checkSelfMessage(to, msg) {
+		const i = this._selfMessages.indexOf(`${to}|${msg}`);
+		if (i !== -1) {
+			this._selfMessages.splice(i, 1);
+			return true;
+		}
+		return false;
+	}
+
 	_pollMessages() {
 		if (!this.isWelcomed) {
 			return;
@@ -85,26 +95,21 @@ class IRCClient {
 				this.joinTo(to);
 			}
 
-			msg = msg.replace(/[\u0001\u0002\r]/g, '');
+			msg = msg.replace(/[\x01\x02\r]/g, '');
 
-			const i = this._selfMessages.indexOf(`${to}|${msg}`);
-			if (i !== -1) {
-				this._selfMessages.splice(i, 1);
+			if (message.from_user === this.nick && this._checkSelfMessage(to, msg)) {
 				return;
 			}
 
 			msg = msg.split('\n');
 
 			if (message.from_user === this.nick && message.to_user) {
-				if (message.to_user === this.nick) {
-					return;
-				}
-				msg.forEach(m => this.sendRaw(`${message.to_user}!${message.to_user}@hackmud.trustnet`, 'PRIVMSG', this.nick, `\u0001ACTION [SELF] ${m}\u0001`));
+				msg.forEach(m => this.sendRaw(`${message.to_user}!${message.to_user}@hackmud.trustnet`, 'PRIVMSG', this.nick, `\x01ACTION [SELF] ${colors.hackmudToIrc(m)}\x01`));
 				return;
 			}
 
 
-			msg.forEach(m => this.sendRaw(from, 'PRIVMSG', to, m));
+			msg.forEach(m => this.sendRaw(from, 'PRIVMSG', to, colors.hackmudToIrc(m)));
 		})
 		.catch(e => {
 			console.error(e.stack || e);
@@ -150,6 +155,7 @@ class IRCClient {
 				return this.checkReady();
 			case 'PING':
 				return this.sendRawFromServer('PONG', args[0]);
+			case 'NOTICE':
 			case 'PRIVMSG':
 				if (!this.isWelcomed) {
 					return;
@@ -165,21 +171,26 @@ class IRCClient {
 					msg = '*' + msg.substring(8, msg.length - 1) + '*';
 				}
 
+				msg = colors.ircToHackmud(msg);
+
 				let p;
 				if (pmsgTo.charAt(0) === '#') {
 					p = this.apiClient.sendChatToChannel(pmsgTo.substr(1), msg);
 				} else {
 					p = this.apiClient.sendChatToUser(pmsgTo, msg);
 				}
+
+				this._selfMessages.push(`${pmsgTo}|${msg}`);
+
 				return p
-					.then(() => {
-						this._selfMessages.push(`${pmsgTo}|${msg}`);
-					})
 					.catch(e => {
+						this._checkSelfMessage(pmsgTo, msg);
 						console.warn(e.stack || e);
 					});
 			case 'MODE':
 			case 'QUIT':
+			case 'WHOIS':
+			case 'KICK':
 				return;
 			case 'NAMES':
 				return this.sendChannelNames(args[0]);
@@ -198,7 +209,7 @@ class IRCClient {
 				}
 				return this.joinTo(pchan);
 			default:
-				console.log(cmd, args);
+				console.log('Unknown IRC command', cmd, args);
 		}
 	}
 
@@ -228,7 +239,7 @@ class IRCClient {
 					this.isWelcomed = true;
 					this.sendRawFromServer('001', this.formatNickForNumeric(), 'Welcome to the Hackmud Chat Gateway');
 					this.sendRawFromServer('002', this.formatNickForNumeric(), 'Your host is ' + this.server.ident + ', running version zdc-hackmud-chat-0.0.1');
-					this.sendRawFromServer('003', this.formatNickForNumeric(), 'This server was created ' + new Date());
+					this.sendRawFromServer('003', this.formatNickForNumeric(), 'This server was created ' + this.server.start);
 					this.sendRawFromServer('004', this.formatNickForNumeric(), this.server.ident, 'zdc-hackmud-chat-0.0.1', 'inkvo', 'inkvo', 'inkvo');
 
 					this.sendRaw('*system', 'NOTICE', this.nick, 'Your persistent token (you can also use this as server password) is ' + this.apiClient.token);
